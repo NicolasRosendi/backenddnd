@@ -1,0 +1,20 @@
+# render.yaml - Blueprint para deploy en Render
+# Subí este archivo a la raíz del repo
+
+services:
+  - type: web
+    name: dnd-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true   # Render genera un secreto random
+      - key: DB_PATH
+        value: /opt/render/project/src/data/dnd.db
+    disk:
+      name: dnd-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
