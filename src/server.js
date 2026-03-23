@@ -42,12 +42,20 @@ app.get('/api/health', (req, res) => {
 });
 
 // ── SERVIR FRONTEND ESTÁTICO (opcional) ─
-// Si querés servir el frontend desde el mismo servidor:
+// Cuando subas el index.html a /public, se sirve automáticamente.
+// Por ahora, si no existe, simplemente responde con un mensaje.
 const publicPath = path.join(__dirname, '..', 'public');
-app.use(express.static(publicPath));
+const fs = require('fs');
+if (fs.existsSync(publicPath)) {
+  app.use(express.static(publicPath));
+}
 app.get('*', (req, res) => {
-  if (!req.path.startsWith('/api')) {
-    res.sendFile(path.join(publicPath, 'index.html'));
+  if (req.path.startsWith('/api')) return;
+  const indexPath = path.join(publicPath, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.json({ message: 'D&D 5e API activa. Frontend pendiente.', docs: '/api/health' });
   }
 });
 
