@@ -45,6 +45,8 @@ db.exec(`
     code        TEXT    UNIQUE NOT NULL,
     owner_id    INTEGER NOT NULL,
     status      TEXT    DEFAULT 'lobby',
+    visibility  TEXT    DEFAULT 'private',
+    password    TEXT    DEFAULT NULL,
     created_at  TEXT    DEFAULT (datetime('now')),
     FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
   );
@@ -94,5 +96,9 @@ db.exec(`
     FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
   );
 `);
+
+// Migración: agregar columnas si no existen (para DBs existentes)
+try { db.exec("ALTER TABLE tables ADD COLUMN visibility TEXT DEFAULT 'private'"); } catch(e) {}
+try { db.exec("ALTER TABLE tables ADD COLUMN password TEXT DEFAULT NULL"); } catch(e) {}
 
 module.exports = db;
