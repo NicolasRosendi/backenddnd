@@ -386,11 +386,42 @@ router.post('/:id/combat/attack', (req, res) => {
       nextRound++;
     }
 
-    db.prepare(`
-      UPDATE combat_state SET current_turn = ?, current_round = ? WHERE table_id = ?
-    `).run(nextTurn, nextRound, req.params.id);
+    // ── CHECK AUTO-END: si quedan solo 2 jugadores y uno cayó ──
+    let combatEnded = false;
+    let winner = null;
+    if (hits && defenderData.hpCurr <= 0) {
+      // Contar cuántos jugadores tenían vida al inicio del combate
+      const totalPlayers = turnOrder.length;
+      if (totalPlayers === 2) {
+        // Pelea 1v1: termina automáticamente
+        combatEnded = true;
+        winner = attackerChar.name;
+        db.prepare("UPDATE combat_state SET status = 'ended' WHERE table_id = ?").run(req.params.id);
+        db.prepare("UPDATE tables SET status = 'lobby' WHERE id = ?").run(req.params.id);
+      } else {
+        // Más de 2: verificar cuántos siguen vivos
+        const alivePlayers = turnOrder.filter(t => {
+          const c = db.prepare('SELECT data FROM characters WHERE id = ?').get(t.character_id);
+          if (!c) return false;
+          const d = JSON.parse(c.data);
+          return (d.hpCurr || 0) > 0;
+        });
+        if (alivePlayers.length <= 1) {
+          combatEnded = true;
+          winner = alivePlayers.length === 1 ? alivePlayers[0].character_name : null;
+          db.prepare("UPDATE combat_state SET status = 'ended' WHERE table_id = ?").run(req.params.id);
+          db.prepare("UPDATE tables SET status = 'lobby' WHERE id = ?").run(req.params.id);
+        }
+      }
+    }
 
-    const nextPlayer = turnOrder[nextTurn];
+    if (!combatEnded) {
+      db.prepare(`
+        UPDATE combat_state SET current_turn = ?, current_round = ? WHERE table_id = ?
+      `).run(nextTurn, nextRound, req.params.id);
+    }
+
+    const nextPlayer = combatEnded ? null : turnOrder[nextTurn];
 
     res.json({
       result: {
@@ -412,7 +443,9 @@ router.post('/:id/combat/attack', (req, res) => {
         defender_hp_remaining: hits ? defenderData.hpCurr : null,
         defender_down: hits && defenderData.hpCurr <= 0,
       },
-      next_turn: {
+      combat_ended: combatEnded,
+      winner: winner,
+      next_turn: combatEnded ? null : {
         round: nextRound,
         turn_index: nextTurn,
         character_name: nextPlayer?.character_name,
