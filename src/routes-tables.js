@@ -20,10 +20,13 @@ function generateCode() {
 // ── CREAR MESA ────────────────────────
 router.post('/', (req, res) => {
   try {
-    const { name } = req.body;
+    const { name, visibility, password } = req.body;
     if (!name || name.length < 2) {
       return res.status(400).json({ error: 'Nombre de mesa requerido (mín. 2 chars)' });
     }
+
+    const vis = (visibility === 'public') ? 'public' : 'private';
+    const pwd = (vis === 'private' && password) ? password : null;
 
     let code;
     let attempts = 0;
@@ -33,8 +36,8 @@ router.post('/', (req, res) => {
     } while (db.prepare('SELECT id FROM tables WHERE code = ?').get(code) && attempts < 10);
 
     const result = db.prepare(
-      'INSERT INTO tables (name, code, owner_id) VALUES (?, ?, ?)'
-    ).run(name, code, req.user.id);
+      'INSERT INTO tables (name, code, owner_id, visibility, password) VALUES (?, ?, ?, ?, ?)'
+    ).run(name, code, req.user.id, vis, pwd);
 
     // Crear estado de combate
     db.prepare(
@@ -47,7 +50,8 @@ router.post('/', (req, res) => {
         name,
         code,
         owner_id: req.user.id,
-        status: 'lobby'
+        status: 'lobby',
+        visibility: vis
       }
     });
   } catch (err) {
@@ -76,11 +80,37 @@ router.get('/', (req, res) => {
   }
 });
 
+// ── LISTAR MESAS PÚBLICAS ─────────────
+router.get('/public', (req, res) => {
+  try {
+    const tables = db.prepare(`
+      SELECT t.id, t.name, t.code, t.status, t.visibility, t.owner_id, t.created_at,
+        (SELECT COUNT(*) FROM table_players tp WHERE tp.table_id = t.id) as player_count,
+        u.username as owner_name,
+        CASE WHEN t.owner_id = ? THEN 1 ELSE 0 END as is_owner,
+        CASE WHEN EXISTS(SELECT 1 FROM table_players tp2 WHERE tp2.table_id = t.id AND tp2.user_id = ?) THEN 1 ELSE 0 END as already_joined
+      FROM tables t
+      JOIN users u ON u.id = t.owner_id
+      WHERE t.visibility = 'public'
+      ORDER BY t.created_at DESC
+      LIMIT 50
+    `).all(req.user.id, req.user.id);
+
+    res.json({ tables });
+  } catch (err) {
+    console.error('Error listando mesas públicas:', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
 // ── OBTENER MESA POR CÓDIGO ───────────
 router.get('/join/:code', (req, res) => {
   try {
-    const table = db.prepare('SELECT * FROM tables WHERE code = ?').get(req.params.code.toUpperCase());
+    const table = db.prepare('SELECT id, name, code, status, visibility, owner_id, created_at, CASE WHEN password IS NOT NULL AND password != "" THEN 1 ELSE 0 END as has_password FROM tables WHERE code = ?').get(req.params.code.toUpperCase());
     if (!table) return res.status(404).json({ error: 'Mesa no encontrada' });
+    // No revelar el password real, solo si tiene
+    table.password = table.has_password ? true : false;
+    delete table.has_password;
     res.json({ table });
   } catch (err) {
     res.status(500).json({ error: 'Error interno' });
@@ -137,11 +167,18 @@ router.get('/:id', (req, res) => {
 // ── UNIRSE A MESA ─────────────────────
 router.post('/:id/join', (req, res) => {
   try {
-    const { character_id } = req.body;
+    const { character_id, password } = req.body;
     if (!character_id) return res.status(400).json({ error: 'Seleccioná un personaje' });
 
     const table = db.prepare('SELECT * FROM tables WHERE id = ?').get(req.params.id);
     if (!table) return res.status(404).json({ error: 'Mesa no encontrada' });
+
+    // Si es privada con password y no soy el dueño, verificar password
+    if (table.visibility === 'private' && table.password && table.owner_id !== req.user.id) {
+      if (!password || password !== table.password) {
+        return res.status(403).json({ error: 'Contraseña incorrecta' });
+      }
+    }
 
     // Verificar que el personaje es mío
     const char = db.prepare('SELECT * FROM characters WHERE id = ? AND user_id = ?')
