@@ -458,6 +458,138 @@ router.post('/:id/combat/attack', (req, res) => {
   }
 });
 
+// ── APLICAR DAÑO MANUAL ───────────────
+router.post('/:id/combat/manual-damage', (req, res) => {
+  try {
+    const { defender_character_id, damage, description } = req.body;
+    if (!defender_character_id || !damage || damage <= 0) {
+      return res.status(400).json({ error: 'Objetivo y daño requeridos' });
+    }
+
+    const table = db.prepare('SELECT * FROM tables WHERE id = ?').get(req.params.id);
+    if (!table || table.status !== 'combat') return res.status(400).json({ error: 'No hay combate activo' });
+
+    const combat = db.prepare('SELECT * FROM combat_state WHERE table_id = ?').get(req.params.id);
+    if (!combat || combat.status !== 'active') return res.status(400).json({ error: 'Combate no activo' });
+
+    const turnOrder = JSON.parse(combat.turn_order);
+    const currentTurn = turnOrder[combat.current_turn];
+    if (currentTurn.user_id !== req.user.id) return res.status(403).json({ error: 'No es tu turno' });
+
+    // Aplicar daño
+    const defenderChar = db.prepare('SELECT * FROM characters WHERE id = ?').get(defender_character_id);
+    if (!defenderChar) return res.status(404).json({ error: 'Defensor no encontrado' });
+    const defenderData = JSON.parse(defenderChar.data);
+    const oldHP = defenderData.hpCurr || 0;
+    defenderData.hpCurr = Math.max(0, oldHP - damage);
+    db.prepare('UPDATE characters SET data = ? WHERE id = ?').run(JSON.stringify(defenderData), defender_character_id);
+
+    // Log
+    const attackerChar = db.prepare('SELECT name FROM characters WHERE id = ?').get(currentTurn.character_id);
+    db.prepare(`
+      INSERT INTO combat_log (table_id, round, attacker_id, defender_id, attack_roll, attack_bonus, attack_total, defender_ac, hit, damage_roll, damage_total)
+      VALUES (?, ?, ?, ?, 0, 0, 0, 0, 1, ?, ?)
+    `).run(req.params.id, combat.current_round, currentTurn.character_id, defender_character_id, description || 'manual', damage);
+
+    // Check auto-end
+    let combatEnded = false;
+    let winner = null;
+    if (defenderData.hpCurr <= 0) {
+      const alivePlayers = turnOrder.filter(t => {
+        const c = db.prepare('SELECT data FROM characters WHERE id = ?').get(t.character_id);
+        if (!c) return false;
+        const d = JSON.parse(c.data);
+        return (d.hpCurr || 0) > 0;
+      });
+      if (alivePlayers.length <= 1) {
+        combatEnded = true;
+        winner = alivePlayers.length === 1 ? alivePlayers[0].character_name : null;
+        db.prepare("UPDATE combat_state SET status = 'ended' WHERE table_id = ?").run(req.params.id);
+        db.prepare("UPDATE tables SET status = 'lobby' WHERE id = ?").run(req.params.id);
+      }
+    }
+
+    // Avanzar turno
+    if (!combatEnded) {
+      let nextTurn = combat.current_turn + 1;
+      let nextRound = combat.current_round;
+      if (nextTurn >= turnOrder.length) { nextTurn = 0; nextRound++; }
+      db.prepare('UPDATE combat_state SET current_turn = ?, current_round = ? WHERE table_id = ?').run(nextTurn, nextRound, req.params.id);
+      const nextPlayer = turnOrder[nextTurn];
+      res.json({
+        success: true,
+        damage_applied: damage,
+        defender_name: defenderChar.name,
+        defender_hp: defenderData.hpCurr,
+        defender_down: defenderData.hpCurr <= 0,
+        combat_ended: false,
+        next_turn: { round: nextRound, turn_index: nextTurn, character_name: nextPlayer?.character_name, user_id: nextPlayer?.user_id }
+      });
+    } else {
+      res.json({ success: true, damage_applied: damage, defender_name: defenderChar.name, defender_hp: 0, defender_down: true, combat_ended: true, winner });
+    }
+  } catch (err) {
+    console.error('Error daño manual:', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ── TIRADA DE SALVACIÓN (conjuro) ─────
+router.post('/:id/combat/saving-throw', (req, res) => {
+  try {
+    const { defender_character_id, stat, spell_dc } = req.body;
+    if (!defender_character_id || !stat || !spell_dc) {
+      return res.status(400).json({ error: 'Objetivo, stat y CD requeridos' });
+    }
+
+    const table = db.prepare('SELECT * FROM tables WHERE id = ?').get(req.params.id);
+    if (!table || table.status !== 'combat') return res.status(400).json({ error: 'No hay combate activo' });
+
+    const combat = db.prepare('SELECT * FROM combat_state WHERE table_id = ?').get(req.params.id);
+    if (!combat || combat.status !== 'active') return res.status(400).json({ error: 'Combate no activo' });
+
+    const turnOrder = JSON.parse(combat.turn_order);
+    const currentTurn = turnOrder[combat.current_turn];
+    if (currentTurn.user_id !== req.user.id) return res.status(403).json({ error: 'No es tu turno' });
+
+    // Obtener stat del defensor
+    const defenderChar = db.prepare('SELECT * FROM characters WHERE id = ?').get(defender_character_id);
+    if (!defenderChar) return res.status(404).json({ error: 'Defensor no encontrado' });
+    const defenderData = JSON.parse(defenderChar.data);
+    const statVal = (defenderData.stats && defenderData.stats[stat]) || 10;
+    const statMod = Math.floor((statVal - 10) / 2);
+
+    // Verificar proficiencia en salvación
+    const saveProf = (defenderData.savingThrowProf || []).includes(stat);
+    const profBonus = saveProf ? (defenderData.profBonus || 2) : 0;
+
+    // Tirar salvación
+    const roll = Math.floor(Math.random() * 20) + 1;
+    const total = roll + statMod + profBonus;
+    const success = total >= spell_dc;
+
+    const statNames = { str: 'Fuerza', dex: 'Destreza', con: 'Constitución', int: 'Inteligencia', wis: 'Sabiduría', cha: 'Carisma' };
+
+    res.json({
+      defender_name: defenderChar.name,
+      stat: stat,
+      stat_name: statNames[stat] || stat,
+      stat_mod: statMod,
+      prof_bonus: profBonus,
+      roll,
+      total,
+      spell_dc: parseInt(spell_dc),
+      success,
+      message: success
+        ? defenderChar.name + ' supera la salvación de ' + (statNames[stat] || stat) + ' (' + total + ' >= ' + spell_dc + ')'
+        : defenderChar.name + ' falla la salvación de ' + (statNames[stat] || stat) + ' (' + total + ' < ' + spell_dc + ')'
+    });
+  } catch (err) {
+    console.error('Error tirada salvación:', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
 // ── PASAR TURNO ───────────────────────
 router.post('/:id/combat/pass', (req, res) => {
   try {
