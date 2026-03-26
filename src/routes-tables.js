@@ -716,4 +716,23 @@ function rollDamage(parsed, isCrit) {
   return { rolls, sum, mod: parsed.mod, total, formula, isCrit };
 }
 
+// ── BORRAR MESA ───────────────────────
+router.delete('/:id', (req, res) => {
+  try {
+    const table = db.prepare('SELECT * FROM tables WHERE id = ?').get(req.params.id);
+    if (!table) return res.status(404).json({ error: 'Mesa no encontrada' });
+    if (table.owner_id !== req.user.id) return res.status(403).json({ error: 'Solo el dueño puede borrar la mesa' });
+
+    // Delete all related data
+    db.prepare('DELETE FROM combat_log WHERE table_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM table_players WHERE table_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM tables WHERE id = ?').run(req.params.id);
+
+    res.json({ success: true, message: 'Mesa eliminada' });
+  } catch (err) {
+    console.error('Error borrando mesa:', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
 module.exports = router;
