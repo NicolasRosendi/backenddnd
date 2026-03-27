@@ -735,4 +735,43 @@ router.delete('/:id', (req, res) => {
   }
 });
 
+// ── CHAT ─────────────────────────────
+// Crear tabla de chat si no existe
+try {
+  db.prepare(`CREATE TABLE IF NOT EXISTS table_chat (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+} catch (e) { /* ya existe */ }
+
+router.get('/:id/chat', (req, res) => {
+  try {
+    const since = req.query.since || 0;
+    const messages = db.prepare(
+      'SELECT id, username, message, created_at FROM table_chat WHERE table_id = ? AND id > ? ORDER BY id ASC LIMIT 100'
+    ).all(req.params.id, since);
+    res.json({ messages });
+  } catch (err) {
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+router.post('/:id/chat', (req, res) => {
+  try {
+    const { message } = req.body;
+    if (!message || !message.trim()) return res.status(400).json({ error: 'Mensaje vacío' });
+    const user = db.prepare('SELECT username FROM users WHERE id = ?').get(req.user.id);
+    const result = db.prepare(
+      'INSERT INTO table_chat (table_id, user_id, username, message) VALUES (?, ?, ?, ?)'
+    ).run(req.params.id, req.user.id, user.username, message.trim());
+    res.json({ success: true, id: result.lastInsertRowid });
+  } catch (err) {
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
 module.exports = router;
