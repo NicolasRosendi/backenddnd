@@ -157,7 +157,7 @@ router.get('/:id', (req, res) => {
       LIMIT 20
     `).all(req.params.id);
 
-    res.json({ table, players, combat, log: log.reverse() });
+    res.json({ table: { ...table, is_owner: table.owner_id === req.user.id }, players, combat, log: log.reverse() });
   } catch (err) {
     console.error('Error obteniendo mesa:', err);
     res.status(500).json({ error: 'Error interno' });
